@@ -2,12 +2,11 @@ mod transformer;
 
 use ndarray::{Array2, Axis};
 use transformer::*;
-use ndarray::{s, Array1, Array3, Array4};
-use rand::prelude::*;
-use rand_distr::Normal;
+use ndarray::{s};
+
+
 
 fn main() {
-
     // Create a small transformer for testing
     let vocab_size = 1000;
     let max_seq_length = 50;
@@ -27,29 +26,31 @@ fn main() {
         dropout_rate,
     );
 
-    // Create sample input sequences with padding
+    // Create sample input sequences
     let batch_size = 2;
     let input_seq_len = 10;
     let target_seq_len = 8;
 
-    // Create input with actual padding (zeros)
-    let mut input = Array2::zeros((batch_size, input_seq_len));
-    // Fill first row with 1s up to position 7 (leaving 3 padding tokens)
-    input.slice_mut(s![0, 0..7]).fill(1.0);
-    // Fill second row with 1s up to position 5 (leaving 5 padding tokens)
-    input.slice_mut(s![1, 0..5]).fill(1.0);
+    // Create random input data (token indices should be integers)
+    let input = Array2::from_shape_fn((batch_size, input_seq_len), |_| {
+        (rand::random::<f32>() * (vocab_size - 1) as f32).floor() as i32 as f32
+    });
+    let target = Array2::from_shape_fn((batch_size, target_seq_len), |_| {
+        (rand::random::<f32>() * (vocab_size - 1) as f32).floor() as i32 as f32
+    });
 
-    // Create target with padding
-    let mut target = Array2::zeros((batch_size, target_seq_len));
-    // Fill first row with 1s up to position 6 (leaving 2 padding tokens)
-    target.slice_mut(s![0, 0..6]).fill(1.0);
-    // Fill second row with 1s up to position 4 (leaving 4 padding tokens)
-    target.slice_mut(s![1, 0..4]).fill(1.0);
+    // Ensure values are in valid range
+    println!("Sample input values:");
+    println!("{:?}", input.slice(s![0, 0..5]));  // Print first 5 values of first sequence
 
     // Create masks
     let enc_padding_mask = Some(create_padding_mask(&input));
     let look_ahead_mask = Some(create_look_ahead_mask(target_seq_len));
     let dec_padding_mask = Some(create_padding_mask(&input));
+
+    // Add debug prints before the forward pass
+    println!("Input shape before forward: {:?}", input.shape());
+    println!("First few input values: {:?}", input.slice(s![0, 0..5]));
 
     // Forward pass
     let output = transformer.forward(
@@ -58,15 +59,20 @@ fn main() {
         enc_padding_mask.as_ref(),
         look_ahead_mask.as_ref(),
         dec_padding_mask.as_ref(),
-        true,  // training mode
+        true, // training mode
     );
 
     // Print output shape and check properties
+    println!("Input shape: {:?}", input.shape());
+    println!("Target shape: {:?}", target.shape());
     println!("Output shape: {:?}", output.shape());
-    println!("Expected shape: [{}, {}, {}]", batch_size, target_seq_len, vocab_size);
-
+    
     // Check if probabilities sum to 1 for each position
-    let prob_sums = output.sum_axis(Axis(2));
-    println!("Probability sums (should be close to 1.0):");
+    let prob_sums = output.sum_axis(Axis(1));
+    println!("\nProbability sums (should be close to 1.0):");
     println!("{:?}", prob_sums);
+
+    // Print a sample of the output probabilities
+    println!("\nSample output probabilities (first sequence, first 10 values):");
+    println!("{:?}", output.slice(s![0, 0..10]));
 }
