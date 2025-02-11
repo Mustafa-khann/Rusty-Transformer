@@ -1,6 +1,8 @@
 use std::ops::Mul;
 use ndarray::{Array, Array1, Array2, Array3, Axis};
 use std::f32::consts::PI;
+use rand::distributions::Normal;
+use rand::distributions::Uniform;
 
 // Model hyperparameters
 const MAX_SEQ_LENGTH: usize = 512;
@@ -18,11 +20,11 @@ pub struct PositionalEncoding {
 
 impl PositionalEncoding {
     pub fn new(max_seq_length: usize, embedding_dim: usize) -> Self {
-        let mut encoding = Array2::zeros((max_seq_length, d_model));
+        let mut encoding = Array2::zeros((max_seq_length, embedding_dim));
 
         for pos in 0..max_seq_length {
-            for i in 0..d_model {
-                let angle = pos as f32 / f32::powf(10000.0, (2 * i) as f32 / d_model as f32);
+            for i in 0..embedding_dim {
+                let angle = pos as f32 / f32::powf(10000.0, (2 * i) as f32 / embedding_dim as f32);
                 encoding[[pos, 2*i]] = angle.sin();
                 encoding[[pos, 2*i+1]] = angle.cos(); 
             }
@@ -77,16 +79,16 @@ pub struct MultiHeadAttention {
 impl MultiHeadAttention {
     pub fn new(embedding_dim: usize, num_heads: usize) -> Self {
         let head_dim = embedding_dim / num_heads;
-
-        // Initialize weights with random values
-        let w_query = Array2::zeros((embedding_dim, embedding_dim));
-        let w_key = Array2::zeros((embedding_dim, embedding_dim));
-        let w_value = Array2::zeros((embedding_dim, embedding_dim));
-        let w_output = Array2::zeros((embedding_dim, embedding_dim));
-
+        
+        // Initialize with random values from normal distribution
+        let w_query = Array2::random((embedding_dim, embedding_dim), Normal::new(0.0, 0.02).unwrap());
+        let w_key = Array2::random((embedding_dim, embedding_dim), Normal::new(0.0, 0.02).unwrap());
+        let w_value = Array2::random((embedding_dim, embedding_dim), Normal::new(0.0, 0.02).unwrap());
+        let w_output = Array2::random((embedding_dim, embedding_dim), Normal::new(0.0, 0.02).unwrap());
+        
         Self {
             num_heads,
-            head_dim, 
+            head_dim,
             w_query,
             w_key,
             w_value,
@@ -94,9 +96,13 @@ impl MultiHeadAttention {
         }
     }
 
-    fn split_heads(&self, x: &Array2<f32>) -> Array3<f32> {
-        let mut x = x.into_shape((batch_size, -1, self.num_heads, self.head_dim)).unwrap();
-        x.permute_axes([0,2,1,3])
+    fn split_heads(&self, x: &Array2<f32>) -> Result<Array3<f32>, ndarray::ShapeError> {
+        let batch_size = x.shape()[0];
+        x.into_shape((batch_size, -1, self.num_heads, self.head_dim))
+            .map(|mut x| {
+                x.permute_axes([0,2,1,3]);
+                x
+            })
     }
 
     fn scaled_dot_product_attention(&self, query: &Array3<f32>, key: &Array3<f32>, value: &Array3<f32>, mask: Option<&Array2<f32>>) -> Array3<f32> {
@@ -121,9 +127,9 @@ impl MultiHeadAttention {
         let v = value.dot(&self.w_value);
 
         // Split heads
-        let q = self.split_heads(&q);
-        let k = self.split_heads(&k);
-        let v = self.split_heads(&v);
+        let q = self.split_heads(&q).unwrap();
+        let k = self.split_heads(&k).unwrap();
+        let v = self.split_heads(&v).unwrap();
 
         // Apply scaled dot-product attention
         let attention_output = self.scaled_dot_product_attention(&q, &k, &v, mask);
@@ -201,8 +207,9 @@ pub struct DecoderLayer {
     self_attention: MultiHeadAttention,
     cross_attention: MultiHeadAttention,
     feed_forward: FeedForward,
-    norm1: LayerNorm, 
+    norm1: LayerNorm,
     norm2: LayerNorm,
+    norm3: LayerNorm,
 }
 
 impl DecoderLayer {
@@ -271,6 +278,17 @@ impl Encoder {
 
         self.norm.forward(&x);
     }
+
+    pub fn apply_dropout(&self, x: &Array2<f32>, training: bool) -> Array2<f32> {
+        if !training || self.dropout_rate == 0.0 {
+            return x.to_owned();
+        }
+        
+        let mask = Array2::random(x.raw_dim(), Uniform::new(0., 1.))
+            .mapv(|x| if x > self.dropout_rate { 1.0 } else { 0.0 });
+        
+        x * &mask * (1.0 / (1.0 - self.dropout_rate))
+    }
 }
 
 // Decoder
@@ -310,6 +328,16 @@ impl Decoder {
         self.norm.forward(&x)
     }
 
+    pub fn apply_dropout(&self, x: &Array2<f32>, training: bool) -> Array2<f32> {
+        if !training || self.dropout_rate == 0.0 {
+            return x.to_owned();
+        }
+        
+        let mask = Array2::random(x.raw_dim(), Uniform::new(0., 1.))
+            .mapv(|x| if x > self.dropout_rate { 1.0 } else { 0.0 });
+        
+        x * &mask * (1.0 / (1.0 - self.dropout_rate))
+    }
 }
 
 // Transformer
@@ -360,4 +388,12 @@ pub fn create_look_ahead_mask(size:usize) -> Array2<f32> {
         }
     }
     mask
+}
+
+pub fn softmax(x: &Array2<f32>, axis: Axis) -> Array2<f32> {
+    let max = x.fold_axis(axis, std::f32::NEG_INFINITY, |&acc, &x| acc.max(x));
+    let exp = x - &max;
+    let exp = exp.mapv(f32::exp);
+    let sum = exp.sum_axis(axis);
+    exp / &sum
 }
